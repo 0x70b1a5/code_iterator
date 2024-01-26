@@ -43,14 +43,15 @@ enum IteratorRequest {
 #[derive(Debug, Serialize, Deserialize)]
 enum IteratorResponse {
     Ok,
+    Run,
     Error(String),
-    RunResult(String),
     LLMResponse(String),
 }
 
 
 fn handle_message(our: &Address, our_channel_id: &mut i32) -> anyhow::Result<()> {
     let message = await_message()?;
+    println!("code_iterator: message: {:?}", message);
 
     match message {
         Message::Response { ref source, ref body, .. } =>
@@ -63,17 +64,28 @@ fn handle_message(our: &Address, our_channel_id: &mut i32) -> anyhow::Result<()>
 }
 
 fn handle_response(source: &Address, body: &Vec<u8>) -> anyhow::Result<()> {
+    println!("code_iterator: response: {:?}", body);
     let iter_resp = serde_json::from_slice::<IteratorResponse>(body)?;
     match iter_resp {
         IteratorResponse::Ok => {}
         IteratorResponse::Error(e) => {
             println!("code_iterator: error: {:?}", e);
         }
-        IteratorResponse::RunResult(result) => {
-            println!("code_iterator: run result: {:?}", result);
-        }
         IteratorResponse::LLMResponse(llm_response) => {
             println!("code_iterator: llm response: {:?}", llm_response);
+        }
+        
+        IteratorResponse::Run => {
+            let Some(blob) = get_blob() else {
+                println!("code_iterator: no blob");
+                return Ok(());
+            };
+            let result = String::from_utf8(blob.bytes)?;
+            println!("code_iterator: run result: {:?}", result);
+            // send_ws_push(
+            //     &WsMessageType::Text,
+            //     &serde_json::to_vec(&IteratorResponse::LLMResponse(result))?,
+            // )?;
         }
     }
 
@@ -81,6 +93,7 @@ fn handle_response(source: &Address, body: &Vec<u8>) -> anyhow::Result<()> {
 }
 
 fn handle_request(our: &Address, source: &Address, body: &Vec<u8>) -> anyhow::Result<()> {
+    println!("code_iterator: request: {:?}", body);
     let iter_req = serde_json::from_slice::<IteratorRequest>(body)?;
     match iter_req {
         IteratorRequest::UserPrompt(prompt) => {
@@ -89,14 +102,18 @@ fn handle_request(our: &Address, source: &Address, body: &Vec<u8>) -> anyhow::Re
         IteratorRequest::UserRunCode(code) => {
             println!("code_iterator: user run code: {:?}", code);
 
-            Request::new()
+            let resp = Request::new()
                 .target((&our.node, "python", "distro", "sys"))
                 .body(serde_json::to_vec(&PythonRequest::Run)?)
                 .blob(LazyLoadBlob{
                     mime: Some("text/plain".to_string()),
                     bytes: code.as_bytes().to_vec()
                 })
-                .send_and_await_response(5)?;
+                .send_and_await_response(5)??;
+
+            println!("code_iterator: python response: {:?}", resp);
+
+            handle_response(&our, &resp.body().to_vec())?;
         }
         IteratorRequest::LLMPrompt(prompt) => {
             println!("code_iterator: llm prompt: {:?}", prompt);

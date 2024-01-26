@@ -7,9 +7,15 @@
         "request_capabilities": [
             "http_server:distro:sys",
             "net:distro:sys",
+            "vfs:distro:sys",
+            "python:distro:sys"
+        ],
+        "grant_capabilities": [
+            "python:distro:sys",
+            "http_server:distro:sys",
+            "net:distro:sys",
             "vfs:distro:sys"
         ],
-        "grant_capabilities": [],
         "public": true
     }
 ]
