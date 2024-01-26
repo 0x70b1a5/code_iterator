@@ -1,0 +1,15 @@
+[
+    {
+        "process_name": "code_iterator",
+        "process_wasm_path": "/code_iterator.wasm",
+        "on_exit": "Restart",
+        "request_networking": true,
+        "request_capabilities": [
+            "http_server:distro:sys",
+            "net:distro:sys",
+            "vfs:distro:sys"
+        ],
+        "grant_capabilities": [],
+        "public": true
+    }
+]
