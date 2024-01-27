@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+input {
+    @apply px-2 py-1 border border-gray-300 rounded-md shadow-sm grow self-stretch;
+}
+
+button, button[type=submit] {
+    @apply inline-flex items-center px-4 py-2 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700;
+}
+
+textarea {
+    @apply px-2 py-1 border border-gray-300 rounded-md shadow-sm grow self-stretch;
+}
+
+.markdown p {
+    @apply text-wrap;
+}
+
+.markdown code {
+    @apply text-wrap text-sm;
+}

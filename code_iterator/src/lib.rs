@@ -70,16 +70,16 @@ struct OpenAiChatCompletion {
     pub choices: Vec<OpenAiChatCompletionChoice>,
 }
 
-fn fetch_openai_response(prompt: &String) -> anyhow::Result<()> {
+fn fetch_openai_response(prompt: &String, our: &Address, our_channel_id: &u32) -> anyhow::Result<()> {
     let mut headers = HashMap::new();
     headers.insert("Content-Type".to_string(), "application/json".to_string());
-    headers.insert("Authorization".to_string(), "Bearer SECRET_KEY".to_string());
+    headers.insert("Authorization".to_string(), "Bearer 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".to_string());
     let body = serde_json::to_vec(&json!({
         "model": "gpt-3.5-turbo",
         "messages": [
             {
                 "role": "system",
-                "content": "You are a helpful assistant who responds in only Python code. Produce code in response to user input."
+                "content": "You are a helpful assistant who responds in only Python code. Produce code in response to user input. MAKE SURE you include the code inside a Markdown code block, e.g. ```python print('hello world') ```"
             },
             {
                 "role": "user",
@@ -88,7 +88,7 @@ fn fetch_openai_response(prompt: &String) -> anyhow::Result<()> {
         ],
     }))?;
 
-    let resp = send_request_await_response(
+    send_request_await_response(
         Method::POST,
         Url::from_str("https://api.openai.com/v1/chat/completions")?,
         Some(headers),
@@ -103,13 +103,17 @@ fn fetch_openai_response(prompt: &String) -> anyhow::Result<()> {
 
     let comp = serde_json::from_slice::<OpenAiChatCompletion>(&body.bytes)?;
     println!("code_iterator: openai response: {:?}", comp.clone());
+    
+    send_ws_push(our.node.clone(), 
+        *our_channel_id,
+        WsMessageType::Text,  
+        LazyLoadBlob {
+        mime: Some("text/plain".to_string()),
+        bytes: json!({
+            "LLMResponse": comp.choices[0].message.content
+        }).to_string().as_bytes().to_vec(),
+    })?;
 
-    let mut headers = HashMap::new();
-    headers.insert("Content-Type".to_string(), "application/json".to_string());
-    send_response(
-        StatusCode::OK,
-        Some(headers),
-        serde_json::to_vec(&IteratorResponse::LLMResponse(comp.choices[0].message.content.clone()))?)?;
     Ok(())
 }
 
@@ -119,20 +123,20 @@ fn handle_message(our: &Address, our_channel_id: &mut u32) -> anyhow::Result<()>
     let http_server_address = ProcessId::from_str("http_server:distro:sys").unwrap();
     match message {
         Message::Response { ref source, ref body, .. } =>
-            handle_response(source, body)?,
+            handle_response(source, body, &our_channel_id)?,
         Message::Request { ref source, ref body, .. } => {
             if source.process == http_server_address {
                 handle_http_request(&our, source, body, our_channel_id)?;
                 return Ok(());
             }
-            handle_request(&our, source, body)?
+            handle_request(&our, source, body, &our_channel_id)?
         }
     }
 
     Ok(())
 }
 
-fn handle_response(source: &Address, body: &Vec<u8>) -> anyhow::Result<()> {
+fn handle_response(source: &Address, body: &Vec<u8>, our_channel_id: &u32) -> anyhow::Result<()> {
     println!("code_iterator: response: {:?}", String::from_utf8(body.clone())?);
     let iter_resp = serde_json::from_slice::<IteratorResponse>(body)?;
     match iter_resp {
@@ -149,13 +153,19 @@ fn handle_response(source: &Address, body: &Vec<u8>) -> anyhow::Result<()> {
                 println!("code_iterator: no blob");
                 return Ok(());
             };
-            let result = String::from_utf8(blob.bytes)?;
+            // result is json
+            let result = serde_json::from_slice::<serde_json::Value>(&blob.bytes)?;
             println!("code_iterator: run result: {:?}", result);
-            send_response(
-                StatusCode::OK,
-                None,
-                result.as_bytes().to_vec(),
-            )?;
+            send_ws_push(
+                source.node.clone(), 
+                *our_channel_id, 
+                WsMessageType::Text, 
+                LazyLoadBlob{
+                    mime: Some("text/plain".to_string()),
+                    bytes: json!({
+                        "LLMRunResponse": result
+                }).to_string().as_bytes().to_vec()
+            })?;
         }
     }
 
@@ -169,8 +179,8 @@ fn handle_http_request(
     body: &Vec<u8>,
     our_channel_id: &mut u32,
 ) -> anyhow::Result<()> {
-    println!("code_iterator: http request: {:?}", body);
     let http_request = serde_json::from_slice::<HttpServerRequest>(body)?;
+    println!("code_iterator: http request: {:?}", http_request);
 
     match http_request {
         HttpServerRequest::Http(request) => {
@@ -188,24 +198,38 @@ fn handle_http_request(
                     println!("code_iterator: http POST request: {:?}", request);
                     let path = request.path()?;
                     match path.as_str() {
-                        "/api/prompt" => {
+                        "/prompt" => {
                             let Some(body) = get_blob() else {
                                 println!("code_iterator: no blob");
                                 return Ok(());
                             };
                             let prompt = serde_json::from_slice::<String>(&body.bytes)?;
-                            fetch_openai_response(&prompt)?;
+                            println!("code_iterator: prompt: {:?}", prompt);
+                            send_response(
+                                StatusCode::OK,
+                                None,
+                                vec![]
+                            )?;
+                            fetch_openai_response(&prompt, &our, our_channel_id)?;
                         }
-                        "/api/run" => {
+                        "/run" => {
                             let Some(body) = get_blob() else {
                                 println!("code_iterator: no blob");
                                 return Ok(());
                             };
+                            println!("code_iterator: run: {:?}", body);
                             let code = serde_json::from_slice::<String>(&body.bytes)?;
-                            Request::new()
-                                .target(our)
-                                .body(serde_json::to_vec(&IteratorRequest::UserRunCode(code))?)
-                                .send()?;
+                            send_response(
+                                StatusCode::OK,
+                                None,
+                                vec![]
+                            )?;
+                            handle_request(
+                                our, 
+                                source,
+                                &serde_json::to_vec(&IteratorRequest::UserRunCode(code.clone()))?,
+                                our_channel_id
+                            )?;
                         }
                         _ => {}
                     }
@@ -230,13 +254,13 @@ fn handle_http_request(
     Ok(())
 }
 
-fn handle_request(our: &Address, source: &Address, body: &Vec<u8>) -> anyhow::Result<()> {
+fn handle_request(our: &Address, source: &Address, body: &Vec<u8>, our_channel_id: &u32) -> anyhow::Result<()> {
     println!("code_iterator: request: {:?}", body);
     let iter_req = serde_json::from_slice::<IteratorRequest>(body)?;
     match iter_req {
         IteratorRequest::UserPrompt(prompt) => {
             println!("code_iterator: user prompt: {:?}", prompt);
-            fetch_openai_response(&prompt)?;
+            fetch_openai_response(&prompt, &our, &our_channel_id)?;
         }
         IteratorRequest::UserRunCode(code) => {
             println!("code_iterator: user run code: {:?}", code);
@@ -248,11 +272,11 @@ fn handle_request(our: &Address, source: &Address, body: &Vec<u8>) -> anyhow::Re
                     mime: Some("text/plain".to_string()),
                     bytes: code.as_bytes().to_vec()
                 })
-                .send_and_await_response(5)??;
+                .send_and_await_response(15)??;
 
             println!("code_iterator: python response: {:?}", resp);
 
-            handle_response(&our, &resp.body().to_vec())?;
+            handle_response(&our, &resp.body().to_vec(), our_channel_id)?;
         }
         IteratorRequest::LLMPrompt(prompt) => {
             println!("code_iterator: llm prompt: {:?}", prompt);
@@ -272,7 +296,8 @@ fn init(our: Address) {
     // Bind UI files to routes; index.html is bound to "/"
     serve_ui(&our, "ui").unwrap();
 
-    bind_http_path("/api", true, true).unwrap();
+    bind_http_path("/prompt", true, true).unwrap();
+    bind_http_path("/run", true, true).unwrap();
 
     // Bind WebSocket path
     bind_ws_path("/", true, false).unwrap();
